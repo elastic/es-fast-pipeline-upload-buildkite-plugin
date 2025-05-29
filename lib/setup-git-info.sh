@@ -2,8 +2,6 @@
 
 set -euo pipefail
 
-# TODO do we need to help buildkite resolve the commit?
-
 REPO="${BUILDKITE_PULL_REQUEST_REPO:-}"
 if [[ -z "$REPO" ]]; then
   REPO="$BUILDKITE_REPO"
@@ -35,7 +33,28 @@ if [[ ! "$ES_BUILDKITE_REF" =~ ^[0-9a-f]{40}$ ]]; then
   ES_BUILDKITE_REF=$(echo "$REF_RESPONSE" | jq -r .object.sha)
 fi
 
-buildkite-agent meta-data set buildkite:git:commit "$ES_BUILDKITE_REF" || true
+# https://github.com/buildkite/agent/blob/main/internal/job/checkout.go#L817
+# Use github api to build a git log output similar to what buildkite is looking for
+
+COMMIT_JSON=$(curl -sSfH "Authorization: token $VAULT_GITHUB_TOKEN" \
+  -H "Accept: application/vnd.github+json" \
+  "https://api.github.com/repos/$ES_BUILDKITE_REPO_OWNER/$ES_BUILDKITE_REPO_NAME/git/commits/$ES_BUILDKITE_REF"
+)
+
+AUTHOR_NAME=$(echo "$COMMIT_JSON" | jq -r .author.name)
+AUTHOR_EMAIL=$(echo "$COMMIT_JSON" | jq -r .author.email)
+COMMIT_MESSAGE=$(echo "$COMMIT_JSON" | jq -r .message)
+
+COMMIT_METADATA_FOR_BK=$(cat <<EOF
+commit ${ES_BUILDKITE_REF}
+abbrev-commit ${ES_BUILDKITE_REF:0:10}
+Author: ${AUTHOR_NAME} <${AUTHOR_EMAIL}>
+
+    ${COMMIT_MESSAGE}
+EOF
+)
+
+buildkite-agent meta-data set buildkite:git:commit "$COMMIT_METADATA_FOR_BK" || true
 
 export ES_BUILDKITE_REF
 export ES_BUILDKITE_REPO_OWNER
